@@ -118,7 +118,7 @@ final class MethodCallHandlerImpl implements MethodCallHandler {
         if (!location.checkPermissions()) {
             location.requestPermissions();
         } else {
-            location.startRequestingLocation();
+            location.requestCurrentLocationViaManager();
         }
     }
 

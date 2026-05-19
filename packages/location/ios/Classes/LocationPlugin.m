@@ -135,11 +135,11 @@
     self.locationWanted = YES;
 
     if ([self isPermissionGranted]) {
-      [self.clLocationManager startUpdatingLocation];
+      [self.clLocationManager requestLocation];
     } else {
       [self requestPermission];
       if ([self isPermissionGranted]) {
-        [self.clLocationManager startUpdatingLocation];
+        [self.clLocationManager requestLocation];
       }
     }
   } else if ([call.method isEqualToString:@"hasPermission"]) {
@@ -307,7 +307,7 @@
 
 - (void)locationManager:(CLLocationManager *)manager
      didUpdateLocations:(NSArray<CLLocation *> *)locations {
-  if (self.waitNextLocation > 0) {
+  if (!self.locationWanted && self.waitNextLocation > 0) {
     self.waitNextLocation -= 1;
     return;
   }
@@ -379,11 +379,23 @@
       self.flutterResult([self isHighAccuracyPermitted] ? @1 : @3);
     }
 
-    if (self.locationWanted || self.flutterListening) {
+    if (self.locationWanted && !self.flutterListening) {
+      [self.clLocationManager requestLocation];
+    } else if (self.flutterListening) {
       [self.clLocationManager startUpdatingLocation];
     }
   }
 #endif
+}
+
+- (void)locationManager:(CLLocationManager *)manager
+       didFailWithError:(NSError *)error {
+  if (self.locationWanted) {
+    self.locationWanted = NO;
+    self.flutterResult([FlutterError errorWithCode:@"LOCATION_ERROR"
+                                           message:error.localizedDescription
+                                           details:nil]);
+  }
 }
 
 @end

@@ -10,9 +10,12 @@ import android.content.IntentSender;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationManager;
+import android.location.LocationListener;
 import android.location.OnNmeaMessageListener;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
+import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.util.SparseArray;
@@ -128,7 +131,9 @@ public class FlutterLocation
                 && permissions[0].equals(Manifest.permission.ACCESS_FINE_LOCATION)) {
             if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 // Checks if this permission was automatically triggered by a location request
-                if (getLocationResult != null || events != null) {
+                if (getLocationResult != null) {
+                    requestCurrentLocationViaManager();
+                } else if (events != null) {
                     startRequestingLocation();
                 }
                 if (result != null) {
@@ -458,6 +463,92 @@ public class FlutterLocation
                         }
                     }
                 });
+    }
+
+    public void requestCurrentLocationViaManager() {
+        // Try last known location first (instant)
+        for (String provider : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+            try {
+                if (locationManager.isProviderEnabled(provider)) {
+                    Location cached = locationManager.getLastKnownLocation(provider);
+                    if (cached != null) {
+                        deliverGetLocation(cached);
+                        return;
+                    }
+                }
+            } catch (SecurityException ignored) {}
+        }
+
+        // No cache — request fresh fix; prefer GPS (emulator Extended Controls → GPS_PROVIDER)
+        String provider = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                ? LocationManager.GPS_PROVIDER
+                : locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                        ? LocationManager.NETWORK_PROVIDER : null;
+
+        if (provider == null) {
+            sendError("SERVICE_STATUS_DISABLED", "No location provider available", null);
+            return;
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                locationManager.getCurrentLocation(provider, null,
+                        command -> new Handler(Looper.getMainLooper()).post(command),
+                        location -> {
+                            if (location != null) deliverGetLocation(location);
+                            else sendError("LOCATION_UNAVAILABLE", "Unable to determine location", null);
+                        });
+            } else {
+                //noinspection deprecation
+                locationManager.requestSingleUpdate(provider, new LocationListener() {
+                    @Override public void onLocationChanged(@NotNull Location loc) { deliverGetLocation(loc); }
+                    @Override public void onStatusChanged(String p, int s, Bundle e) {}
+                    @Override public void onProviderEnabled(@NotNull String p) {}
+                    @Override public void onProviderDisabled(@NotNull String p) {
+                        sendError("SERVICE_STATUS_DISABLED", "Location provider disabled", null);
+                    }
+                }, Looper.getMainLooper());
+            }
+        } catch (SecurityException e) {
+            sendError("PERMISSION_DENIED", "Location permission denied", null);
+        }
+    }
+
+    private void deliverGetLocation(Location location) {
+        if (getLocationResult == null) return;
+        HashMap<String, Object> loc = new HashMap<>();
+        loc.put("latitude", location.getLatitude());
+        loc.put("longitude", location.getLongitude());
+        loc.put("accuracy", (double) location.getAccuracy());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            loc.put("verticalAccuracy", (double) location.getVerticalAccuracyMeters());
+            loc.put("headingAccuracy", (double) location.getBearingAccuracyDegrees());
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            loc.put("elapsedRealtimeUncertaintyNanos", (double) location.getElapsedRealtimeUncertaintyNanos());
+        }
+        loc.put("provider", location.getProvider());
+        Bundle extras = location.getExtras();
+        if (extras != null) loc.put("satelliteNumber", extras.getInt("satellites"));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+            loc.put("elapsedRealtimeNanos", (double) location.getElapsedRealtimeNanos());
+            if (location.isFromMockProvider()) loc.put("isMock", (double) 1);
+        } else {
+            loc.put("isMock", (double) 0);
+        }
+        if (mLastMslAltitude == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            loc.put("altitude", location.getAltitude());
+        } else {
+            loc.put("altitude", mLastMslAltitude);
+        }
+        loc.put("speed", (double) location.getSpeed());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            loc.put("speed_accuracy", (double) location.getSpeedAccuracyMetersPerSecond());
+        }
+        loc.put("heading", (double) location.getBearing());
+        loc.put("time", (double) location.getTime());
+        getLocationResult.success(loc);
+        getLocationResult = null;
     }
 
 }
